@@ -94,6 +94,9 @@ pub struct Config {
     /// Which providers get a ring on the notch, in order. An empty list means every provider.
     #[serde(default)]
     pub notch_slots: Vec<TraySlot>,
+    /// Stable cell ids, including individual OpenRouter keys, in sidebar display order.
+    #[serde(default)]
+    pub sidebar_order: Vec<String>,
     /// Antigravity's lane on the ring, as the Mac app's "Notch reads": "automatic", "5h" or "weekly"
     #[serde(default = "default_antigravity_limit")]
     pub antigravity_limit: String,
@@ -310,6 +313,7 @@ impl Default for Config {
             theme: default_theme(),
             notch_providers: Vec::new(), // empty = show them all
             notch_slots: Vec::new(),     // filled in by load(), from notch_providers
+            sidebar_order: Vec::new(),
             antigravity_limit: default_antigravity_limit(),
             antigravity_model: default_antigravity_model(),
             glm_notch_fixed: true, // a fresh install picks from the full list already
@@ -479,6 +483,18 @@ mod tests {
         carry_shared_position, clamp_critical_limit, clamp_watch_limit, color_transition_or_step,
         keep_open_on_upgrade, snap_scale, theme_or_system, weekly_ring_or_off, without_bom, Config,
     };
+
+    #[test]
+    fn sidebar_order_defaults_and_survives_restart_with_other_settings() {
+        let mut cfg: Config = serde_json::from_str(r#"{"theme":"light","notch_visible":false}"#).unwrap();
+        assert!(cfg.sidebar_order.is_empty());
+        cfg.sidebar_order = vec!["openrouter@work".into(), "codex".into(), "claude".into()];
+        let saved = serde_json::to_string_pretty(&cfg).unwrap();
+        let restored: Config = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.sidebar_order, cfg.sidebar_order);
+        assert_eq!(restored.theme, "light");
+        assert!(!restored.notch_visible);
+    }
 
     #[test]
     fn reset_switches_default_on_and_round_trip_without_changing_other_settings() {

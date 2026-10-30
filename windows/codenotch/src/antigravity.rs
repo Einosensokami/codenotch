@@ -3,7 +3,7 @@
 //! Preferred path: when official Antigravity CLI (`agy.exe`) is installed
 //! (`%LOCALAPPDATA%\agy\bin\agy.exe` or `PATH`), executes standalone `agy --print /usage`
 //! via native Windows ConPTY inside a bounded JobObject without running the full IDE.
-//! Refreshes at startup and explicit/hover requests with a 5-minute TTL cache.
+//! Refreshes in the background every 15 seconds. Hover reads the cached quota only.
 //!
 //! Fallback path, when the CLI is absent (as upstream, most honest first):
 //!   1. Local bridge: find the `language_server*` process (its command line carries
@@ -40,8 +40,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-const POLL_SECS: u64 = 300;
-const CLI_TTL: Duration = Duration::from_secs(300);
+const POLL_SECS: u64 = 15;
+const CLI_TTL: Duration = Duration::from_secs(POLL_SECS);
 const LOAD_CODE_ASSIST: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 const QUOTA_SUMMARY: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 const LS_SERVICE: &str = "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary";
@@ -59,18 +59,37 @@ pub fn request_refresh() {
 }
 
 pub fn request_hover_refresh() {
-    // Hover must not wake the legacy adapter's periodic poller.
-    if let Some(sender) = REFRESH_CLI.lock().unwrap().as_ref() {
-        let _ = sender.try_send(());
+    // Hover only displays the persisted reading; the background worker owns refreshes.
+}
+
+#[cfg(test)]
+#[test]
+fn hover_does_not_launch_cli_refresh() {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    *REFRESH_CLI.lock().unwrap() = Some(sender);
+    request_hover_refresh();
+    let pending = receiver.try_recv();
+    *REFRESH_CLI.lock().unwrap() = None;
+    assert!(pending.is_err(), "hover queued a CLI process instead of using the cached quota");
+    assert!(!REFRESH_LEGACY.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+fn wait_for_cli_refresh(receiver: &std::sync::mpsc::Receiver<()>, interval: Duration) -> bool {
+    match receiver.recv_timeout(interval) {
+        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => true,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
     }
 }
 
 #[cfg(test)]
 #[test]
-fn hover_does_not_request_legacy_refresh() {
-    assert!(REFRESH_CLI.lock().unwrap().is_none());
-    request_hover_refresh();
-    assert!(!REFRESH_LEGACY.load(std::sync::atomic::Ordering::Relaxed));
+fn cli_refreshes_without_hover_and_accepts_manual_refresh() {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    assert!(wait_for_cli_refresh(&receiver, Duration::from_millis(5)));
+    sender.try_send(()).unwrap();
+    assert!(wait_for_cli_refresh(&receiver, Duration::ZERO));
+    drop(sender);
+    assert!(!wait_for_cli_refresh(&receiver, Duration::ZERO));
 }
 
 fn now_ms() -> u64 {
@@ -687,7 +706,7 @@ fn start_cli(app: AppHandle) {
 
         let mut last_attempt: Option<Instant> = None;
 
-        while receiver.recv().is_ok() {
+        while wait_for_cli_refresh(&receiver, CLI_TTL) {
             if last_attempt.is_some_and(|last| last.elapsed() < CLI_TTL) {
                 continue;
             }

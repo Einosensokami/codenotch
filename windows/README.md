@@ -25,6 +25,48 @@ documented behaviour and the wire formats.
 
 Providers that are not installed simply do not get a cell.
 
+### OpenRouter prepaid keys
+
+In **Settings → Accounts → Sidebar display order**, use **Move up** / **Move down**
+to arrange the sidebar's services and individual OpenRouter keys. Changes apply
+immediately and persist across restarts. Temporarily unavailable accounts retain
+their saved positions; new items appear at the end. Provider visibility switches
+continue to control which services are shown.
+
+For a local Windows build, run `scripts\build-windows.cmd` from `windows/`, or
+use the VS Code **Build Windows deployment** task. The script discovers an
+installed Visual Studio C++ toolchain using `vswhere` and builds the locked
+debug executable at `target\debug\codenotch.exe`. Visual Studio Build Tools
+with the Desktop development with C++ workload is required.
+
+In **Settings → Accounts → OpenRouter**, add a name/account alias and an ordinary
+OpenRouter API key. Each key gets its own notch cell: the main number is its
+remaining **USD key budget**, with budget spent/limit, today's and this month's
+key spend, and lifetime spend on the hover card. The progress bar measures the
+key's budget, not cumulative account deposits. A current reading at 90% spent
+or exhausted shows a warning on the card. No cap means “No Key limit set”, not
+unlimited account funds. Multiple keys can share a wallet; their budgets are
+never added together or presented as account balance.
+
+Configure limits on OpenRouter itself. Codenotch reads `GET /api/v1/key` every
+five minutes per key (manual refresh respects that floor and HTTP 429 backoff).
+Prepaid keys show no reset countdown. If OpenRouter reports a periodic key
+budget, its reset interval is explicitly labelled as a **Key budget reset**;
+current budget spend comes from limit minus remaining, not lifetime usage.
+
+Keys are stored in **Windows Credential Manager** under `Codenotch/OpenRouter/`;
+only random identifiers and display names are saved beside the app configuration.
+No management key is required. Account wallet balance is intentionally not queried.
+Removing a key deletes its local tracking entry and saved credential; it does
+**not** revoke/delete the key at OpenRouter. Invalid keys stay visible for manual
+removal. Failed reads retain the last in-memory budget with an unavailable/stale
+notice, never replace it with zero, and suppress its current ring reading. Usage
+is not cached to disk; after restart, the app waits for a fresh reading.
+
+Regression checks from `windows/`: `node --test test-openrouter.cjs test-codex-headline.cjs scripts/test-claude-quota-freshness.cjs`,
+`node scripts/check-ui-scripts.mjs`, and `cargo test --locked openrouter::tests`.
+The tests use synthetic fixtures and never contact real accounts.
+
 ### Codex quota recovery
 
 The direct usage endpoint remains the first choice. If it fails, Codenotch can

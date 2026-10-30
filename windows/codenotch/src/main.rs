@@ -24,6 +24,7 @@ mod antigravity;
 mod glm;
 mod opencode;
 mod commandcode;
+mod openrouter;
 mod agy_cli;
 mod glyphs;
 mod trayicon;
@@ -600,6 +601,7 @@ pub(crate) fn refresh_provider(app: &AppHandle, provider: &str) -> bool {
         "glm" => glm::request_refresh(),
         "opencode" => opencode::request_refresh(),
         "commandcode" => commandcode::request_refresh(),
+        "openrouter" => openrouter::request_refresh(),
         _ => return false,
     }
     true
@@ -706,6 +708,7 @@ pub(crate) fn provider_page(provider: &str) -> Option<(&'static str, &'static st
         "glm" => ("https://z.ai/manage-apikey/apikey-list", "z.ai"),
         "opencode" => ("https://opencode.ai", "opencode.ai"),
         "commandcode" => ("https://commandcode.ai", "commandcode.ai"),
+        "openrouter" => ("https://openrouter.ai/settings/keys", "openrouter.ai"),
         _ => return None,
     })
 }
@@ -1268,6 +1271,7 @@ fn ring_window<'a>(
         // The Mac sets headlineID "rolling", weeklyID "weekly".
         "opencode" => by_id("rolling"),
         "commandcode" => by_id("monthly"),
+        "openrouter" => tightest(windows.iter()),
         _ => antigravity_lane(windows, antigravity_limit, antigravity_model),
     }
 }
@@ -1327,6 +1331,7 @@ pub(crate) fn snapshot_of(app: &AppHandle, id: &str) -> usage::UsageSnapshot {
         "glm" => st.glm.lock().unwrap().clone(),
         "opencode" => st.opencode.lock().unwrap().clone(),
         "commandcode" => st.commandcode.lock().unwrap().clone(),
+        "openrouter" => openrouter::snapshot(),
         _ => st.usage.lock().unwrap().clone(),
     }
 }
@@ -1425,6 +1430,37 @@ fn get_notch_slots(app: AppHandle) -> Vec<config::TraySlot> {
     let st = app.state::<AppState>();
     let c = st.cfg.lock().unwrap();
     c.notch_slots.clone()
+}
+
+#[tauri::command]
+fn get_sidebar_order(app: AppHandle) -> Vec<String> {
+    app.state::<AppState>().cfg.lock().unwrap().sidebar_order.clone()
+}
+
+#[tauri::command]
+fn set_sidebar_order(app: AppHandle, order: Vec<String>) -> Result<Vec<String>, String> {
+    if order.len() > 512 || order.iter().any(|id| id.len() > 256) {
+        return Err("Invalid sidebar order".into());
+    }
+    let mut unique = Vec::new();
+    for id in order {
+        if !id.is_empty() && !unique.contains(&id) { unique.push(id); }
+    }
+    {
+        let st = app.state::<AppState>();
+        let mut cfg = st.cfg.lock().unwrap();
+        let mut next = cfg.clone();
+        next.sidebar_order = unique.clone();
+        let path = config::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory")?;
+        }
+        let text = serde_json::to_string_pretty(&next).map_err(|_| "Cannot encode settings")?;
+        std::fs::write(path, text).map_err(|_| "Cannot save sidebar order")?;
+        *cfg = next;
+    }
+    let _ = app.emit("sidebar_order", &unique);
+    Ok(unique)
 }
 
 #[tauri::command]
@@ -1774,12 +1810,13 @@ pub fn provider_label(id: &str) -> &'static str {
         "glm" => "z.ai",
         "opencode" => "OpenCode",
         "commandcode" => "Command Code",
+        "openrouter" => "OpenRouter",
         _ => "Claude",
     }
 }
 
 /// Every provider the tray menu can offer, in the order the notch shows them.
-pub const TRAY_PROVIDER_IDS: [&str; 9] = ["claude", "codex", "glm", "opencode", "commandcode", "cursor", "grok", "copilot", "gemini"];
+pub const TRAY_PROVIDER_IDS: [&str; 10] = ["claude", "codex", "glm", "opencode", "commandcode", "openrouter", "cursor", "grok", "copilot", "gemini"];
 
 /// Keeps the tray menu current. macOS rebuilds its menu as it opens; Tauri has no such hook, so it
 /// is rebuilt whenever a reading changes, and once a minute besides — otherwise "Resets in 12 min"
@@ -1998,6 +2035,9 @@ fn main() {
             get_glm,
             get_opencode,
             get_commandcode,
+            openrouter::get_openrouter,
+            openrouter::add_openrouter_key,
+            openrouter::remove_openrouter_key,
             get_glyphs,
             get_activity,
             open_data_dir,
@@ -2033,6 +2073,8 @@ fn main() {
             get_theme_resolved,
             get_tray_options,
             get_notch_slots,
+            get_sidebar_order,
+            set_sidebar_order,
             set_notch_slots,
             get_antigravity_prefs,
             set_antigravity_prefs,
@@ -2090,6 +2132,7 @@ fn main() {
             glm::start(handle.clone());
             opencode::start(handle.clone());
             commandcode::start(handle.clone());
+            openrouter::start(handle.clone());
             activity::start(handle.clone());
             reset_watch::start(handle.clone());
             // Collecting glyphs may read icon resources out of a few executables; do it off the main thread and push when done

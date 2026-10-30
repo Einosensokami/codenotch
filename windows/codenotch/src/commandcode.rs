@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
 const API: &str = "https://api.commandcode.ai/alpha";
-const POLL_SECS: u64 = 300;
+const POLL_SECS: u64 = 15;
 static REFRESH: AtomicBool = AtomicBool::new(false);
 static BACKOFF_UNTIL: AtomicU64 = AtomicU64::new(0);
 

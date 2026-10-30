@@ -327,8 +327,9 @@ fn run_cmd_conpty(
         WaitForSingleObject, CREATE_SUSPENDED,
         EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
         PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW,
-        STARTF_USESTDHANDLES,
+        STARTF_USESTDHANDLES, STARTF_USESHOWWINDOW,
     };
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
     if !program.is_file() {
         return Err(format!("Program not found: {}", program.display()));
@@ -469,7 +470,8 @@ fn run_cmd_conpty(
     let mut si_ex = STARTUPINFOEXW::default();
     si_ex.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     // Prevent inherited parent output handles from bypassing the pseudo console.
-    si_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si_ex.StartupInfo.wShowWindow = SW_HIDE.0 as u16;
     si_ex.lpAttributeList = attr_list;
 
     let mut proc_info = PROCESS_INFORMATION::default();

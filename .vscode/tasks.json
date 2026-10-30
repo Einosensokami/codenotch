@@ -1,0 +1,19 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build Windows deployment",
+			"type": "process",
+			"command": "cmd.exe",
+			"args": [
+				"/c",
+				"windows\\scripts\\build-windows.cmd"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build"
+		}
+	]
+}

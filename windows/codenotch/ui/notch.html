@@ -329,6 +329,7 @@
   </svg>
   <div id="notice"></div>
 </div>
+<script src="sidebar-order.js"></script>
 <script>
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
@@ -425,6 +426,34 @@ let glmSnap={status:'absent',windows:[],fetched_at:0,note:''};
 // OpenCode Go plan, read with OpenCode's own sign-in; absent until OpenCode is installed
 let opencodeSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let commandcodeSnap={status:'absent',windows:[],fetched_at:0,note:''};
+let openrouterAccounts=[];
+// OPENROUTER_BUDGET_START
+function orCopy(en,zh){ return /^zh/i.test(stateSnap.lang_resolved||stateSnap.lang||'')?zh:en; }
+function orMoney(value){ return Number.isFinite(value)?'$'+value.toFixed(2):'—'; }
+function openrouterCells(accounts){
+  return accounts.map(a=>({id:'openrouter@'+a.id,base:'openrouter',name:a.name,glyph:'OR',account:a,
+    snap:{status:a.status,fetched_at:a.fetched_at,note:a.note,windows:
+      a.limit!=null&&a.remaining!=null?[{id:'budget',label:'Key budget',used:a.limit>0?Math.min(1,Math.max(0,1-a.remaining/a.limit)):1,resets_at:null}]:[]}}));
+}
+function openrouterCard(a){
+  const fresh=a.status==='ok'&&a.fetched_at>0&&Date.now()-a.fetched_at<=900000;
+  const capped=a.limit!=null&&a.remaining!=null;
+  let h='';
+  if(!fresh) h+=`<div class="c-note">${esc(orCopy(a.status==='needsAuth'?'Key invalid or unavailable — remove and add again.':'Not current — showing last known reading.',a.status==='needsAuth'?'Key 無效或無法存取，可移除後重新加入。':'非即時資料，顯示上次讀取結果。'))}</div>`;
+  if(capped){
+    const used=a.limit>0?Math.min(1,Math.max(0,1-a.remaining/a.limit)):1;
+    const spent=Math.max(0,a.limit-a.remaining);
+    h+=`<div class="win"><div class="w-row"><span class="w-label">${esc(orCopy('Key budget remaining','Key 剩餘預算'))}</span><span>${esc(orMoney(a.remaining))}${fresh&&(a.remaining<=0||used>=0.9)?' ⚠':''}</span></div>
+      <div class="w-track"><div class="w-fill" style="width:${(used*100).toFixed(0)}%;background:${tone(used)}"></div></div>
+      <div class="w-used">${esc(orCopy('Budget spent','預算已用'))} ${esc(orMoney(spent))} / ${esc(orMoney(a.limit))}${fresh&&a.remaining<=0?' · '+esc(orCopy('Exhausted','已耗盡')):''}</div></div>`;
+  }else h+=`<div class="c-note">${esc(a.fetched_at?orCopy('No Key limit set (not an unlimited account balance)','未設 Key 上限（不代表帳戶餘額無限）'):orCopy('Waiting for first reading…','等待首次讀取…'))}</div>`;
+  h+=`<div class="c-note">${esc(orCopy('Today','今日'))} ${esc(orMoney(a.daily))} · ${esc(orCopy('This month','本月'))} ${esc(orMoney(a.monthly))}<br>${esc(orCopy('Lifetime Key spend','Key 累計花費'))} ${esc(orMoney(a.usage))}</div>`;
+  if(a.reset) h+=`<div class="c-note">${esc(orCopy('Key budget reset','Key 預算重置'))}: ${esc(a.reset)}</div>`;
+  if(a.note) h+=`<div class="c-note">${esc(a.note)}</div>`;
+  h+=`<div class="c-note">${esc(orCopy('Key budget is not account balance. Keys may share the same wallet.','Key 預算不是帳戶餘額；多把 Key 可能共用同一錢包。'))}</div>`;
+  return h;
+}
+// OPENROUTER_BUDGET_END
 let agSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let glyphs={}; // id → {kind:'mark'|'appicon', url}
 let activity=[]; // working state of the non-Claude providers: {provider,state:'busy'|'waiting',name,detail,since}
@@ -1118,6 +1147,7 @@ function glyphHtml(p,small){
 // Provider table (order = top to bottom in the pill). `glyph` is the fallback letter used when no mark is available
 // Which providers get a ring: [{provider}]. null or an empty list means every provider.
 let notchSlots=null;
+let sidebarOrder=[];
 function slotFor(id){
   if(!Array.isArray(notchSlots)) return null;
   for(const s of notchSlots){ if(s&&s.provider===id) return s; }
@@ -1146,7 +1176,7 @@ function claudeCells(){
   }));
 }
 function providers(){
-  const list=claudeCells();
+  const list=claudeCells().concat(openrouterCells(openrouterAccounts));
   if(codexSnap.status!=='absent') list.push({id:'codex',base:'codex',name:'Codex',glyph:'Cx',snap:codexSnap});
   if(glmSnap.status!=='absent') list.push({id:'glm',base:'glm',name:'z.ai',glyph:'Z.ai',snap:glmSnap});
   if(opencodeSnap.status!=='absent') list.push({id:'opencode',base:'opencode',name:'OpenCode',glyph:'OC',snap:opencodeSnap});
@@ -1159,9 +1189,9 @@ function providers(){
     const picked=list.filter(p=>!!slotFor(p.base));
     // Never leave the notch with nothing in it: an empty result means the choice no longer matches
     // any available provider, so fall back to showing everything rather than an empty pill.
-    if(picked.length) return picked;
+    if(picked.length) return orderSidebarItems(picked,sidebarOrder);
   }
-  return list;
+  return orderSidebarItems(list,sidebarOrder);
 }
 // Antigravity's "Notch reads" and "Model data", as in the Mac app; chosen in settings
 let agPrefs={limit:'automatic',model:'gemini'};
@@ -1190,6 +1220,7 @@ function headlineOf(snap,id){
   if(id==='glm') return byId('session');
   if(id==='opencode') return byId('rolling');
   if(id==='commandcode') return byId('monthly');
+  if(id==='openrouter') return byId('budget');
   const fam=ws.filter(w=>laneFamily(w)===agPrefs.model), lanes=fam.length?fam:ws;
   if(agPrefs.limit!=='automatic'){ const w=tightestOf(lanes.filter(w=>laneIs(w,agPrefs.limit))); if(w) return w; }
   return tightestOf(lanes.filter(w=>w.used<1))||tightestOf(lanes)||lanes[0];
@@ -1209,6 +1240,7 @@ function weeklyOf(snap,id){
   if(id==='glm') return byId('weekly');
   if(id==='opencode') return byId('weekly');
   if(id==='commandcode') return byId('weekly');
+  if(id==='openrouter') return null;
   const fam=ws.filter(w=>laneFamily(w)===agPrefs.model), lanes=fam.length?fam:ws;
   return tightestOf(lanes.filter(w=>laneIs(w,'weekly')));
 }
@@ -1225,6 +1257,7 @@ function claudeQuotaCurrent(snap,w,now=Date.now()){
     && !!w && (w.resets_at==null || w.resets_at>now);
 }
 function ringWindow(snap,id,w){
+  if(id==='openrouter') return snap.status==='ok'&&!staleOf(snap)?w:null;
   return id!=='claude' || claudeQuotaCurrent(snap,w) ? w : null;
 }
 function quotaResetCopy(snap,id,w){
@@ -1306,7 +1339,8 @@ function renderRing(){
       else if(ws==='attention') activity.innerHTML=`<g class="arc-pulse"><circle cx="28" cy="28" r="19" fill="none" stroke="${WATCH}" stroke-width="2.5"/></g>`;
       else activity.innerHTML='';
     }
-    if(p.snap.status==='needsAuth'||p.snap.status==='none') pct.textContent='—';
+    if(p.base==='openrouter') pct.textContent=p.snap.status==='ok'&&!staleOf(p.snap)?(p.account.remaining==null?orCopy('No cap','未設限'):orMoney(p.account.remaining)):'—';
+    else if(p.snap.status==='needsAuth'||p.snap.status==='none') pct.textContent='—';
     else if(h && h.count!=null) pct.textContent='~'+h.count;
     else if(h) pct.textContent=(h.derived?'~':'')+(showRemaining?leftPctText(h.used):pctText(h.used))+'%';
     else pct.textContent=p.snap.windows.length?'—':'…'; // its declared window is missing: a dash, not a wait
@@ -1379,7 +1413,9 @@ function renderCard(){
   // directory's slug and the subscriptionType read out of .credentials.json.
   let html=`<div class="c-head">${headIcon}<span class="c-title">${esc(ui().title(p.name))}</span></div>`;
   if(staleOf(snap)&&snap.fetched_at) html+=`<div class="c-sub">${ui().updated(ago(snap.fetched_at))}</div>`;
-  if(snap.status==='needsAuth'){
+  if(p.base==='openrouter'){
+    html+=openrouterCard(p.account);
+  }else if(snap.status==='needsAuth'){
     const who={claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',grok:'Run grok login to see usage.',copilot:'Run gh auth login to see usage.',opencode:'Run opencode auth login to see usage.',commandcode:'Sign in with the Command Code app to read your usage.',gemini:'Sign in to Antigravity to see usage.'}[p.base]||'';
     html+=`<div class="c-note">${textCopy(who)}<br>${esc(textCopy(snap.note||''))}</div>`;
   }else if(!snap.windows.length){
@@ -2175,9 +2211,15 @@ listen('glm',e=>{glmSnap=e.payload||glmSnap;renderRing();if(card.classList.conta
 invoke('get_glm').then(u=>{glmSnap=u||glmSnap;renderRing();}).catch(()=>{});
 listen('opencode',e=>{opencodeSnap=e.payload||opencodeSnap;settle('opencode');renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 invoke('get_opencode').then(u=>{opencodeSnap=u||opencodeSnap;renderRing();}).catch(()=>{});
+listen('openrouter',e=>{openrouterAccounts=Array.isArray(e.payload)?e.payload:[];for(const id of Object.keys(refreshing))if(id.startsWith('openrouter@'))settle(id);renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
+invoke('get_openrouter').then(a=>{openrouterAccounts=Array.isArray(a)?a:[];renderRing();}).catch(()=>{});
 listen('commandcode',e=>{commandcodeSnap=e.payload||commandcodeSnap;settle('commandcode');renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 invoke('get_commandcode').then(u=>{commandcodeSnap=u||commandcodeSnap;renderRing();}).catch(()=>{});
 invoke('get_notch_slots').then(v=>{if(Array.isArray(v)){notchSlots=v;renderRing();}}).catch(()=>{});
+listen('sidebar_order',e=>{
+  if(Array.isArray(e.payload)){sidebarOrder=e.payload;renderRing();if(card.classList.contains('show'))renderCard();}
+}).catch(()=>{});
+invoke('get_sidebar_order').then(v=>{if(Array.isArray(v)){sidebarOrder=v;renderRing();}}).catch(()=>{});
 listen('notch_slots',e=>{
   notchSlots=Array.isArray(e.payload)?e.payload:null;
   renderRing();

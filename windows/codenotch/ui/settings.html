@@ -110,6 +110,8 @@
   .seg button:disabled{opacity:.45}
   .btn{border:0;background:var(--btn);font-size:13px;padding:5px 12px;border-radius:6px;flex:none}
   .btn:hover{background:var(--btn-hover)}
+  .btn:disabled{opacity:.45}
+  .order-actions{display:flex;gap:6px;flex:none}
   /* As wide as the Colour transition control above (--slider-w is measured from it), so they line up */
   .item.slider > .value{margin-left:auto;min-width:4ch;text-align:right;font-variant-numeric:tabular-nums}
   .item.slider > input.range{-webkit-appearance:none;appearance:none;flex:none;width:var(--slider-w,180px);height:16px;margin:0;background:transparent}
@@ -152,6 +154,21 @@
         <div id="acc-off-wrap" hidden>
           <div class="sec">Not connected</div>
           <div class="group" id="acc-off" data-dynamic></div>
+        </div>
+        <div class="sec" id="sidebar-order-title" data-dynamic>Sidebar display order</div>
+        <div class="group" id="sidebar-order" data-dynamic></div>
+        <div class="sec">OpenRouter</div>
+        <div class="group" data-dynamic>
+          <form id="or-form" class="acct">
+            <label id="or-name-label" for="or-name">Key name</label>
+            <input id="or-name" maxlength="80" required autocomplete="off" style="width:100%;margin:6px 0 12px;padding:8px;box-sizing:border-box">
+            <label id="or-key-label" for="or-key">API key</label>
+            <input id="or-key" type="password" required autocomplete="off" spellcheck="false" style="width:100%;margin:6px 0 12px;padding:8px;box-sizing:border-box">
+            <button class="btn" id="or-add" type="submit">Add key</button>
+            <div id="or-help" class="acct-detail"></div>
+            <div id="or-message" role="status" class="acct-detail"></div>
+          </form>
+          <div id="or-list"></div>
         </div>
       </section>
 
@@ -241,6 +258,7 @@
 </div>
 <div id="toast" data-dynamic>Saved</div>
 
+<script src="sidebar-order.js"></script>
 <script>
 /* ---------------------------------------------------------------------------
    Codenotch settings: the Mac's three panes — Accounts, Appearance, General.
@@ -1178,8 +1196,8 @@ document.getElementById('close').addEventListener('click', () => {
 });
 
 /* ---- providers ---------------------------------------------------------- */
-const ORDER = ['claude', 'codex', 'glm', 'opencode', 'commandcode', 'cursor', 'grok', 'copilot', 'gemini'];
-const FALLBACK_LABEL = { claude:'Claude', codex:'Codex', glm:'z.ai', opencode:'OpenCode', commandcode:'Command Code', cursor:'Cursor', grok:'Grok', copilot:'GitHub Copilot', gemini:'Antigravity' };
+const ORDER = ['claude', 'codex', 'glm', 'opencode', 'commandcode', 'openrouter', 'cursor', 'grok', 'copilot', 'gemini'];
+const FALLBACK_LABEL = { claude:'Claude', codex:'Codex', glm:'z.ai', opencode:'OpenCode', commandcode:'Command Code', openrouter:'OpenRouter', cursor:'Cursor', grok:'Grok', copilot:'GitHub Copilot', gemini:'Antigravity' };
 let options = [];      // [{id,label,status,used}] from get_tray_options
 let glyphs = {};       // id -> {kind:'svg'|'png'|'appicon', svg, url}
 function providerList(){
@@ -1198,6 +1216,7 @@ function glyphHtml(p){
 function refreshOptions(){
   return call('get_tray_options', undefined, null).then(opts => {
     if(Array.isArray(opts) && opts.length){ options = opts.filter(o => o && typeof o.id === 'string'); renderAccounts(); }
+    return refreshSidebarOrder();
   });
 }
 
@@ -1306,6 +1325,7 @@ function renderAccounts(){
   document.getElementById('acc-off-wrap').hidden = !off.length;
   document.getElementById('acc-off').innerHTML = off.map(p => accountBlock(p, false, false)).join('')
     + '<div class="item cap">' + esc(ui(NO_RING, NO_RING)) + '</div>';
+  renderSidebarOrder();
 }
 function saveNotch(next){
   const ids = providerList().map(p => p.id);
@@ -1345,6 +1365,94 @@ accountsPane.addEventListener('change', e => {
     .then(v => { agPrefs = v; renderAccounts(); toast(); })
     .catch(err => { renderAccounts(); strip('set_antigravity_prefs failed: ' + errText(err)); });
 });
+
+let orAccounts=[];
+let orBusy=false;
+let sidebarOrder=[], sidebarWindows=[], sidebarBusy=false, sidebarLoaded=false, sidebarRevision=0;
+function sidebarItems(){
+  const enabled = notchOn().map(slot => slot.provider);
+  let items = claudeSidebarItems(sidebarWindows).concat(orAccounts.map(a => ({id:'openrouter@'+a.id,base:'openrouter',name:'OpenRouter · '+a.name})));
+  items = items.concat(providerList().filter(p => p.id!=='claude'&&p.id!=='openrouter'&&p.status!=='absent').map(p => ({id:p.id,base:p.id,name:p.label||p.id})));
+  const picked = items.filter(p => enabled.includes(p.base));
+  return orderSidebarItems(picked.length?picked:items,sidebarOrder);
+}
+function renderSidebarOrder(){
+  const root=document.getElementById('sidebar-order');
+  if(!root)return;
+  document.getElementById('sidebar-order-title').textContent=orText('Sidebar display order','側邊顯示順序');
+  const items=sidebarItems();
+  root.innerHTML='<div class="item cap">'+esc(orText('Move items up or down. Changes apply immediately and are saved.','使用上下按鈕調整順序，變更會立即套用並儲存。'))+'</div>'+items.map((p,i)=>{
+    const up=orText('Move up','上移'), down=orText('Move down','下移');
+    return '<div class="item"><span>'+esc(p.name)+'</span><span class="order-actions"><button class="btn" type="button" data-order-id="'+esc(p.id)+'" data-direction="-1" aria-label="'+esc(up+' '+p.name)+'"'+(!sidebarLoaded||sidebarBusy||i===0?' disabled':'')+'>'+up+'</button><button class="btn" type="button" data-order-id="'+esc(p.id)+'" data-direction="1" aria-label="'+esc(down+' '+p.name)+'"'+(!sidebarLoaded||sidebarBusy||i===items.length-1?' disabled':'')+'>'+down+'</button></span></div>';
+  }).join('');
+}
+async function refreshSidebarOrder(){
+  const revision=sidebarRevision;
+  try{
+    const [order,usage]=await Promise.all([invoke('get_sidebar_order'),invoke('get_usage')]);
+    if(!sidebarBusy&&revision===sidebarRevision)sidebarOrder=Array.isArray(order)?order:[];
+    sidebarLoaded=true;
+    sidebarWindows=usage&&Array.isArray(usage.windows)?usage.windows:[];
+    renderSidebarOrder();
+  }catch(e){strip('Cannot load sidebar order: '+errText(e));}
+}
+document.getElementById('sidebar-order').addEventListener('click',async e=>{
+  const b=e.target.closest('[data-order-id]');
+  if(!b||sidebarBusy||!sidebarLoaded)return;
+  const id=b.dataset.orderId, direction=Number(b.dataset.direction);
+  const next=moveSidebarItem(sidebarOrder,sidebarItems(),id,direction);
+  sidebarRevision++;sidebarBusy=true;renderSidebarOrder();
+  try{sidebarOrder=await invoke('set_sidebar_order',{order:next});toast();}
+  catch(error){strip('Cannot save sidebar order: '+errText(error));}
+  finally{
+    sidebarBusy=false;renderSidebarOrder();
+    const button=Array.from(document.querySelectorAll('[data-order-id]')).find(b=>b.dataset.orderId===id&&Number(b.dataset.direction)===direction&&!b.disabled);
+    if(button)button.focus();
+  }
+});
+try{
+  window.__TAURI__.event.listen('sidebar_order',e=>{sidebarRevision++;sidebarOrder=Array.isArray(e.payload)?e.payload:[];renderSidebarOrder();});
+  window.__TAURI__.event.listen('usage',e=>{sidebarWindows=e.payload&&Array.isArray(e.payload.windows)?e.payload.windows:[];renderSidebarOrder();});
+}catch(e){}
+function orText(en,zh){ return /^zh/i.test(uiLang)?zh:en; }
+function renderOpenrouter(){
+  renderSidebarOrder();
+  document.getElementById('or-name-label').textContent=orText('Key name / account alias','Key 名稱／帳戶別名');
+  document.getElementById('or-key-label').textContent=orText('API key','API Key');
+  document.getElementById('or-add').textContent=orText('Add key','新增 Key');
+  document.getElementById('or-add').disabled=orBusy;
+  document.getElementById('or-help').textContent=orText('Keys are stored in Windows Credential Manager. Budgets are read from OpenRouter, not edited here. Removing a key only stops local tracking; it does not revoke it on OpenRouter.','密鑰儲存在 Windows 認證管理員。預算上限從 OpenRouter 讀取，請在 OpenRouter 設定。移除只會停止本機追蹤，不會刪除 OpenRouter 上的 Key。');
+  document.getElementById('or-list').innerHTML=orAccounts.map(a=>'<div class="acct"><div class="acct-line"><span>'+esc(a.name)+'</span><button class="btn" type="button" data-or-remove="'+esc(a.id)+'"'+(orBusy?' disabled':'')+'>'+orText('Remove','移除')+'</button></div><div class="acct-detail">'+esc(a.status==='ok'?(a.remaining==null?orText('No Key limit set','未設 Key 上限'):orText('Key budget remaining $','Key 剩餘預算 $')+a.remaining.toFixed(2)):orText('Waiting / unavailable — see the card for details','等待讀取／無法存取，詳見額度卡片'))+'</div></div>').join('');
+}
+async function refreshOpenrouter(){
+  const result=await invoke('get_openrouter');
+  orAccounts=Array.isArray(result)?result:[];
+  renderOpenrouter();
+}
+document.getElementById('or-form').addEventListener('submit',async e=>{
+  e.preventDefault(); if(orBusy)return;
+  orBusy=true; renderOpenrouter();
+  const input=document.getElementById('or-key');
+  const key=input.value; input.value='';
+  const message=document.getElementById('or-message'); message.textContent='';
+  try{
+    await invoke('add_openrouter_key',{name:document.getElementById('or-name').value,key});
+    document.getElementById('or-name').value='';
+    await refreshOpenrouter(); await refreshOptions();
+    if(notchSlots.length&&!notchSlots.some(s=>s.provider==='openrouter')) saveNotch(notchSlots.concat({provider:'openrouter'}));
+    toast();
+  }catch(error){ message.textContent=errText(error); }
+  finally{ orBusy=false; renderOpenrouter(); }
+});
+document.getElementById('or-list').addEventListener('click',async e=>{
+  const button=e.target.closest('[data-or-remove]'); if(!button||orBusy)return;
+  orBusy=true; renderOpenrouter();
+  try{ await invoke('remove_openrouter_key',{id:button.dataset.orRemove}); await refreshOpenrouter(); await refreshOptions(); }
+  catch(error){document.getElementById('or-message').textContent=errText(error);}
+  finally{orBusy=false;renderOpenrouter();}
+});
+refreshOpenrouter().catch(()=>{});
+try{window.__TAURI__.event.listen('openrouter',e=>{orAccounts=Array.isArray(e.payload)?e.payload:[];renderOpenrouter();});}catch(e){}
 
 /* ---- Appearance: Show, and App icon -------------------------------------
    Two choices, one command. Hiding both would leave nothing to click, so Rust keeps the tray icon
