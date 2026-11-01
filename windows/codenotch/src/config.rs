@@ -113,6 +113,8 @@ pub struct Config {
     /// Add Command Code to a previously saved notch selection once.
     #[serde(default)]
     pub commandcode_notch_fixed: bool,
+    #[serde(default)]
+    pub zed_notch_fixed: bool,
     /// The same one-shot migration for the GitHub Copilot ring.
     #[serde(default)]
     pub copilot_notch_fixed: bool,
@@ -319,6 +321,7 @@ impl Default for Config {
             glm_notch_fixed: true, // a fresh install picks from the full list already
             opencode_notch_fixed: true,
             commandcode_notch_fixed: true,
+            zed_notch_fixed: true,
             copilot_notch_fixed: true,
             notch_visible: true,
             notch_on_hover: true,
@@ -391,6 +394,7 @@ pub fn load() -> Config {
     // Likewise for OpenCode.
     migrate_opencode_notch(&mut cfg, &raw);
     migrate_commandcode_notch(&mut cfg, &raw);
+    migrate_zed_notch(&mut cfg, &raw);
     // And for GitHub Copilot.
     migrate_copilot_notch(&mut cfg, &raw);
 
@@ -450,6 +454,30 @@ fn migrate_commandcode_notch(cfg: &mut Config, raw: &Option<String>) {
         cfg.notch_slots.push(TraySlot { provider: "commandcode".into() });
     }
     cfg.commandcode_notch_fixed = true;
+}
+
+fn migrate_zed_notch(cfg: &mut Config, raw: &Option<String>) {
+    let predates = raw.as_deref()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .is_some_and(|value| value.get("zed_notch_fixed").is_none());
+    if !predates { return; }
+    if !cfg.notch_slots.is_empty() && !cfg.notch_slots.iter().any(|slot| slot.provider == "zed") {
+        cfg.notch_slots.push(TraySlot { provider: "zed".into() });
+    }
+    cfg.zed_notch_fixed = true;
+}
+
+#[cfg(test)]
+#[test]
+fn zed_is_added_once_to_existing_sidebar_selections() {
+    let mut cfg = Config::default();
+    cfg.notch_slots = vec![TraySlot { provider: "codex".into() }];
+    migrate_zed_notch(&mut cfg, &Some("{}".into()));
+    assert!(cfg.notch_slots.iter().any(|slot| slot.provider == "zed"));
+    cfg.notch_slots.retain(|slot| slot.provider != "zed");
+    let saved = Some(serde_json::to_string(&cfg).unwrap());
+    migrate_zed_notch(&mut cfg, &saved);
+    assert!(!cfg.notch_slots.iter().any(|slot| slot.provider == "zed"));
 }
 
 fn migrate_copilot_notch(cfg: &mut Config, raw: &Option<String>) {

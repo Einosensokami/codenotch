@@ -25,6 +25,31 @@ documented behaviour and the wire formats.
 
 Providers that are not installed simply do not get a cell.
 
+### Zed AI
+
+In **Settings → Accounts → Zed AI**, connect a browser session to show Zed-hosted
+AI spend, its reported spending limit, and remaining USD budget in the sidebar.
+Sign in at `dashboard.zed.dev`, open the browser developer tools' Network panel,
+and copy the request Cookie containing `zed.session` from `billing/usage`.
+The password field accepts that Cookie header; only `zed.session` is retained,
+in Windows Credential Manager. The app never returns the session through IPC or
+writes it to its JSON configuration. Remove deletes only Codenotch's copy.
+
+The read uses `https://cloud.zed.dev/frontend/billing/usage`, an undocumented
+frontend endpoint; an expired session or changed response reports an error.
+Polling runs every five minutes, with a one-minute manual refresh floor and
+HTTP 429 Retry-After backoff. Missing spending limits remain unknown, and failed
+reads clear the ring. Usage snapshots are not saved to disk.
+
+Without a browser session, a standard Zed editor sign-in in Windows Credential
+Manager (`zed:url=https://zed.dev`) can show reported model-request and edit
+prediction quotas from `/client/users/me`. This source cannot supply AI spend.
+The browser source is used alone when configured; data from different accounts
+is never combined. BYOK and external-agent usage belongs to those providers.
+
+Checks: `node --test test-zed.cjs test-sidebar-order.cjs` and
+`cargo test --locked -p codenotch`. Tests use synthetic fixtures.
+
 ### OpenRouter prepaid keys
 
 In **Settings → Accounts → Sidebar display order**, use **Move up** / **Move down**
@@ -76,7 +101,7 @@ app-server method before falling back to a rollout snapshot. The desktop's
 `%LOCALAPPDATA%\OpenAI\Codex\bin` installation is checked as well as native CLI
 candidates. No `.cmd`/Node wrapper is launched. The owned process is hidden,
 limited to 20 seconds, and terminated/reaped after the read; no inference or
-login command is sent. Existing HTTP 429 backoff and five-minute polling remain.
+login command is sent. Background polling runs every 15 seconds; existing HTTP 429 backoff remains.
 
 The main ring/tray selects only core `primary`, never a weekly, Spark or
 code-review replacement. If `primary` is absent the headline stays blank;
@@ -164,8 +189,8 @@ this display rule does not bypass HTTP 403 or change OAuth, polling or backoff.
 ### Antigravity
 
 - **Official CLI (Preferred)**: When the official Antigravity CLI (`agy.exe`) is installed (`%LOCALAPPDATA%\agy\bin\agy.exe` or on `PATH`) and signed in, Codenotch reads official quotas directly without keeping the full IDE running.
-- **Execution**: Runs the official CLI in a hidden Windows pseudo-console, with a 70-second timeout and cleanup of its process tree. It does not need PowerShell scripts or a separate service.
-- **Refresh**: Checks at startup and on hover/explicit request when readings are at least five minutes old; failed attempts are also limited to once per five minutes. It keeps previous readings on failure, without switching to legacy APIs. The CLI is not launched periodically while idle.
+- **Execution**: Runs the official CLI and its pseudo-console on a private Windows desktop. The read-only `/usage` query has a one-process job limit: attempts to launch child shells, terminals, sign-ins, or updater helpers are blocked before they can display anything. The worker never switches the user's desktop. A 70-second timeout bounds each attempt and its process is cleaned up. If desktop isolation fails, the attempt fails without launching on the interactive desktop.
+- **Refresh**: Checks at startup and every 15 seconds after the previous attempt completes, including while idle. Hover displays the cached reading without starting a process. Explicit refresh respects the 15-second attempt floor. Previous readings are kept on failure, without switching to legacy APIs.
 - **Fallback**: When the official CLI is not installed, Codenotch preserves the legacy local bridge (`language_server`), Credential Manager, and transcript model turn counting to maintain compatibility with existing installations.
 - **Official CLI Reference**: Standalone `/usage` printing is described in the [official Antigravity CLI documentation](https://www.antigravity.google/docs/cli/headless). Note: no categorical Terms of Service guarantee is made.
 

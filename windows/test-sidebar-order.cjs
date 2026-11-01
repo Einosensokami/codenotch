@@ -35,7 +35,7 @@ test('real notch provider path applies saved order after visibility filtering an
   function restarted(order,slots){
     const ctx=context();
     Object.assign(ctx,{usage:{windows:[]},openrouterAccounts:[{id:'a',name:'A'},{id:'b',name:'B'}]});
-    for(const name of ['codexSnap','glmSnap','opencodeSnap','commandcodeSnap','cursorSnap','grokSnap','copilotSnap','agSnap'])ctx[name]={status:'absent'};
+    for(const name of ['zedSnap','codexSnap','glmSnap','opencodeSnap','commandcodeSnap','cursorSnap','grokSnap','copilotSnap','agSnap'])ctx[name]={status:'absent'};
     ctx.codexSnap={status:'ok'};
     vm.runInContext(notch.slice(notch.indexOf('function openrouterCells('),notch.indexOf('function openrouterCard(')),ctx);
     vm.runInContext(notch.slice(notch.indexOf('let notchSlots=null;'),notch.indexOf('// Antigravity\'s "Notch reads"')),ctx);

@@ -157,6 +157,17 @@
         </div>
         <div class="sec" id="sidebar-order-title" data-dynamic>Sidebar display order</div>
         <div class="group" id="sidebar-order" data-dynamic></div>
+        <div class="sec">Zed AI</div>
+        <div class="group" data-dynamic>
+          <form id="zed-form" class="acct">
+            <label for="zed-cookie">Zed browser session / 網頁登入 session</label>
+            <input id="zed-cookie" type="password" required autocomplete="off" spellcheck="false" placeholder="zed.session=…" style="width:100%;margin:6px 0 12px;padding:8px;box-sizing:border-box">
+            <button class="btn" type="submit">Connect / 連接</button>
+            <button class="btn" id="zed-remove" type="button">Remove / 移除</button>
+            <div class="acct-detail">登入 dashboard.zed.dev，在瀏覽器開發人員工具的 Network 中找 billing/usage，複製 request Cookie（包含 zed.session）。Session 只存於 Windows 認證管理員。這裡顯示 Zed 託管 AI 花費；自備 API Key 和外部 Agent 由各服務計費。</div>
+            <div id="zed-message" class="acct-detail" role="status"></div>
+          </form>
+        </div>
         <div class="sec">OpenRouter</div>
         <div class="group" data-dynamic>
           <form id="or-form" class="acct">
@@ -1196,8 +1207,8 @@ document.getElementById('close').addEventListener('click', () => {
 });
 
 /* ---- providers ---------------------------------------------------------- */
-const ORDER = ['claude', 'codex', 'glm', 'opencode', 'commandcode', 'openrouter', 'cursor', 'grok', 'copilot', 'gemini'];
-const FALLBACK_LABEL = { claude:'Claude', codex:'Codex', glm:'z.ai', opencode:'OpenCode', commandcode:'Command Code', openrouter:'OpenRouter', cursor:'Cursor', grok:'Grok', copilot:'GitHub Copilot', gemini:'Antigravity' };
+const ORDER = ['claude', 'codex', 'glm', 'opencode', 'commandcode', 'openrouter', 'cursor', 'grok', 'copilot', 'gemini', 'zed'];
+const FALLBACK_LABEL = { claude:'Claude', codex:'Codex', glm:'z.ai', opencode:'OpenCode', commandcode:'Command Code', openrouter:'OpenRouter', cursor:'Cursor', grok:'Grok', copilot:'GitHub Copilot', gemini:'Antigravity', zed:'Zed' };
 let options = [];      // [{id,label,status,used}] from get_tray_options
 let glyphs = {};       // id -> {kind:'svg'|'png'|'appicon', svg, url}
 function providerList(){
@@ -1451,6 +1462,22 @@ document.getElementById('or-list').addEventListener('click',async e=>{
   catch(error){document.getElementById('or-message').textContent=errText(error);}
   finally{orBusy=false;renderOpenrouter();}
 });
+document.getElementById('zed-form').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const input=document.getElementById('zed-cookie'),message=document.getElementById('zed-message');
+  const buttons=e.currentTarget.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);
+  try{await invoke('set_zed_cookie',{cookie:input.value});input.value='';if(notchSlots.length&&!notchSlots.some(s=>s.provider==='zed')) saveNotch(notchSlots.concat({provider:'zed'}));message.textContent='已儲存，正在讀取 Zed AI 用量。';await refreshOptions();}
+  catch(err){message.textContent=errText(err);}
+  finally{buttons.forEach(b=>b.disabled=false);}
+});
+document.getElementById('zed-remove').addEventListener('click',async e=>{
+  e.target.disabled=true;
+  try{await invoke('remove_zed_cookie');document.getElementById('zed-cookie').value='';document.getElementById('zed-message').textContent='已移除網頁 session。';await refreshOptions();}
+  catch(err){document.getElementById('zed-message').textContent=errText(err);}
+  finally{e.target.disabled=false;}
+});
+try{window.__TAURI__.event.listen('zed',e=>{document.getElementById('zed-message').textContent=(e.payload||{}).note||'';refreshOptions();});}catch(e){}
+invoke('get_zed').then(s=>{document.getElementById('zed-message').textContent=s.note||'';}).catch(()=>{});
 refreshOpenrouter().catch(()=>{});
 try{window.__TAURI__.event.listen('openrouter',e=>{orAccounts=Array.isArray(e.payload)?e.payload:[];renderOpenrouter();});}catch(e){}
 

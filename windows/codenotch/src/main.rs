@@ -24,6 +24,7 @@ mod antigravity;
 mod glm;
 mod opencode;
 mod commandcode;
+mod zed;
 mod openrouter;
 mod agy_cli;
 mod glyphs;
@@ -71,6 +72,7 @@ pub struct AppState {
     /// OpenCode Go plan snapshot, read with OpenCode's own sign-in (auth.json or opencode.db).
     pub opencode: Mutex<usage::UsageSnapshot>,
     pub commandcode: Mutex<usage::UsageSnapshot>,
+    pub zed: Mutex<usage::UsageSnapshot>,
     /// Provider glyph cache, collected at launch and again on a tray refresh
     pub glyphs: Mutex<std::collections::HashMap<String, glyphs::Glyph>>,
     /// Working state of the non-Claude providers (Cursor reports it; Codex and Antigravity are inferred from recent writes)
@@ -601,6 +603,7 @@ pub(crate) fn refresh_provider(app: &AppHandle, provider: &str) -> bool {
         "glm" => glm::request_refresh(),
         "opencode" => opencode::request_refresh(),
         "commandcode" => commandcode::request_refresh(),
+        "zed" => zed::request_refresh(),
         "openrouter" => openrouter::request_refresh(),
         _ => return false,
     }
@@ -634,6 +637,11 @@ fn get_glm(state: tauri::State<AppState>) -> usage::UsageSnapshot {
 #[tauri::command]
 fn get_opencode(state: tauri::State<AppState>) -> usage::UsageSnapshot {
     state.opencode.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn get_zed(state: tauri::State<AppState>) -> usage::UsageSnapshot {
+    state.zed.lock().unwrap().clone()
 }
 
 #[tauri::command]
@@ -708,6 +716,7 @@ pub(crate) fn provider_page(provider: &str) -> Option<(&'static str, &'static st
         "glm" => ("https://z.ai/manage-apikey/apikey-list", "z.ai"),
         "opencode" => ("https://opencode.ai", "opencode.ai"),
         "commandcode" => ("https://commandcode.ai", "commandcode.ai"),
+        "zed" => ("https://dashboard.zed.dev", "dashboard.zed.dev"),
         "openrouter" => ("https://openrouter.ai/settings/keys", "openrouter.ai"),
         _ => return None,
     })
@@ -1271,6 +1280,7 @@ fn ring_window<'a>(
         // The Mac sets headlineID "rolling", weeklyID "weekly".
         "opencode" => by_id("rolling"),
         "commandcode" => by_id("monthly"),
+        "zed" => by_id("spend").or_else(|| by_id("model_requests")).or_else(|| by_id("edit_predictions")),
         "openrouter" => tightest(windows.iter()),
         _ => antigravity_lane(windows, antigravity_limit, antigravity_model),
     }
@@ -1331,6 +1341,7 @@ pub(crate) fn snapshot_of(app: &AppHandle, id: &str) -> usage::UsageSnapshot {
         "glm" => st.glm.lock().unwrap().clone(),
         "opencode" => st.opencode.lock().unwrap().clone(),
         "commandcode" => st.commandcode.lock().unwrap().clone(),
+        "zed" => st.zed.lock().unwrap().clone(),
         "openrouter" => openrouter::snapshot(),
         _ => st.usage.lock().unwrap().clone(),
     }
@@ -1810,13 +1821,14 @@ pub fn provider_label(id: &str) -> &'static str {
         "glm" => "z.ai",
         "opencode" => "OpenCode",
         "commandcode" => "Command Code",
+        "zed" => "Zed",
         "openrouter" => "OpenRouter",
         _ => "Claude",
     }
 }
 
 /// Every provider the tray menu can offer, in the order the notch shows them.
-pub const TRAY_PROVIDER_IDS: [&str; 10] = ["claude", "codex", "glm", "opencode", "commandcode", "openrouter", "cursor", "grok", "copilot", "gemini"];
+pub const TRAY_PROVIDER_IDS: [&str; 11] = ["claude", "codex", "glm", "opencode", "commandcode", "openrouter", "cursor", "grok", "copilot", "gemini", "zed"];
 
 /// Keeps the tray menu current. macOS rebuilds its menu as it opens; Tauri has no such hook, so it
 /// is rebuilt whenever a reading changes, and once a minute besides — otherwise "Resets in 12 min"
@@ -2009,6 +2021,7 @@ fn main() {
             glm: Mutex::new(glm::load_persisted()),
             opencode: Mutex::new(opencode::load_persisted()),
             commandcode: Mutex::new(commandcode::load_persisted()),
+            zed: Mutex::new(zed::load_persisted()),
             glyphs: Mutex::new(Default::default()),
             activity: Mutex::new(Vec::new()),
         })
@@ -2035,6 +2048,9 @@ fn main() {
             get_glm,
             get_opencode,
             get_commandcode,
+            get_zed,
+            zed::set_zed_cookie,
+            zed::remove_zed_cookie,
             openrouter::get_openrouter,
             openrouter::add_openrouter_key,
             openrouter::remove_openrouter_key,
@@ -2132,6 +2148,7 @@ fn main() {
             glm::start(handle.clone());
             opencode::start(handle.clone());
             commandcode::start(handle.clone());
+            zed::start(handle.clone());
             openrouter::start(handle.clone());
             activity::start(handle.clone());
             reset_watch::start(handle.clone());

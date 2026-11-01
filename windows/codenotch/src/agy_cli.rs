@@ -299,14 +299,68 @@ fn quote_arg(arg: &str) -> String {
     res
 }
 
-/// Spawns a hidden process connected to a native Windows ConPTY (Pseudo Console) inside a JobObject.
-/// Drains up to 64 KB of stdout concurrently, enforces timeout, and cleans up all descendants.
+/// Runs the quota console on a private, non-interactive desktop. SW_HIDE alone
+/// cannot keep dependencies from opening a new console with CREATE_NEW_CONSOLE.
+/// Use a fresh thread so SetThreadDesktop never touches the app's UI thread.
 #[cfg(windows)]
 fn run_cmd_conpty(
     program: &Path,
     args: &[&str],
     cwd: Option<&Path>,
     timeout: Duration,
+) -> Result<String, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use windows::core::PCWSTR;
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, CreateDesktopW, GetThreadDesktop, SetThreadDesktop, HDESK,
+        DESKTOP_CONTROL_FLAGS, DESKTOP_CREATEWINDOW, DESKTOP_READOBJECTS, DESKTOP_WRITEOBJECTS,
+    };
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+
+    struct Desktop {
+        handle: HDESK,
+        original: HDESK, // Borrowed: GetThreadDesktop's handle must not be closed here.
+        name: Vec<u16>,
+    }
+    impl Drop for Desktop {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = SetThreadDesktop(self.original);
+                let _ = CloseDesktop(self.handle);
+            }
+        }
+    }
+
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    std::thread::scope(|scope| {
+        std::thread::Builder::new().name("quota-console".into()).spawn_scoped(scope, || {
+            let name: Vec<u16> = format!("CodenotchQuota-{}-{}", std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)).encode_utf16().chain(Some(0)).collect();
+            let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) }
+                .map_err(|e| format!("Cannot read quota thread desktop: {e}"))?;
+            let handle = unsafe {
+                CreateDesktopW(PCWSTR(name.as_ptr()), PCWSTR::null(), None, DESKTOP_CONTROL_FLAGS(0),
+                    DESKTOP_CREATEWINDOW.0 | DESKTOP_READOBJECTS.0 | DESKTOP_WRITEOBJECTS.0, None)
+            }.map_err(|e| format!("Cannot create private quota desktop: {e}"))?;
+            let mut desktop = Desktop { handle, original, name };
+            unsafe { SetThreadDesktop(desktop.handle) }
+                .map_err(|e| format!("Cannot isolate quota console: {e}"))?;
+            // Fail closed on desktop errors; never retry on the interactive desktop.
+            run_cmd_conpty_isolated(program, args, cwd, timeout, &mut desktop.name)
+        }).map_err(|e| format!("Cannot start isolated quota worker: {e}"))?
+            .join().map_err(|_| "Isolated quota worker panicked".to_string())?
+    })
+}
+
+/// Spawns a process connected to a native Windows ConPTY (Pseudo Console) inside a JobObject.
+/// Drains up to 64 KB of stdout concurrently, enforces timeout, and cleans up all descendants.
+#[cfg(windows)]
+fn run_cmd_conpty_isolated(
+    program: &Path,
+    args: &[&str],
+    cwd: Option<&Path>,
+    timeout: Duration,
+    desktop_name: &mut [u16],
 ) -> Result<String, String> {
     use std::io::Read;
     use std::os::windows::io::FromRawHandle;
@@ -319,6 +373,7 @@ fn run_cmd_conpty(
         AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
         TerminateJobObject, JobObjectExtendedLimitInformation,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
     };
     use windows::Win32::System::Pipes::CreatePipe;
     use windows::Win32::System::Threading::{
@@ -349,7 +404,13 @@ fn run_cmd_conpty(
             .map_err(|e| format!("Cannot create CLI process job: {e}"))?;
         let job = Job(h);
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // /usage is a read-only query by the standalone executable. It must not
+        // start shells, terminals, browser sign-ins, or updater helpers. A child
+        // may ignore SW_HIDE or delegate its console to the interactive terminal,
+        // so prevent its creation in the kernel, before it can display anything.
+        limits.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        limits.BasicLimitInformation.ActiveProcessLimit = 1;
         SetInformationJobObject(
             job.0,
             JobObjectExtendedLimitInformation,
@@ -472,6 +533,7 @@ fn run_cmd_conpty(
     // Prevent inherited parent output handles from bypassing the pseudo console.
     si_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     si_ex.StartupInfo.wShowWindow = SW_HIDE.0 as u16;
+    si_ex.StartupInfo.lpDesktop = PWSTR(desktop_name.as_mut_ptr());
     si_ex.lpAttributeList = attr_list;
 
     let mut proc_info = PROCESS_INFORMATION::default();
@@ -841,6 +903,72 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "Child fixture invoked by test_descendant_console_stays_off_interactive_desktop"]
+    fn visible_console_child_fixture() {
+        use std::os::windows::process::CommandExt;
+        let cmd = PathBuf::from(std::env::var_os("ComSpec").unwrap());
+        let child = std::process::Command::new(cmd)
+            .args(["/d", "/c", "title CODENOTCH_QUOTA_VISIBILITY_FIXTURE & ping -n 3 127.0.0.1 >nul"])
+            .creation_flags(0x0000_0010) // A dependency explicitly asks for a new console.
+            .spawn();
+        let outcome = match child {
+            Ok(mut child) => { let _ = child.wait(); b"spawned".as_slice() }
+            Err(error) => {
+                // ERROR_NOT_ENOUGH_QUOTA: the job's active-process limit blocked it.
+                assert_eq!(error.raw_os_error(), Some(1816));
+                b"blocked".as_slice()
+            }
+        };
+        std::fs::write("console-child-completed", outcome).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_descendant_console_stays_off_interactive_desktop() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, IsWindowVisible};
+
+        unsafe extern "system" fn inspect(hwnd: HWND, param: LPARAM) -> BOOL {
+            if IsWindowVisible(hwnd).as_bool() {
+                let mut title = [0u16; 512];
+                let n = GetWindowTextW(hwnd, &mut title);
+                if n > 0 && String::from_utf16_lossy(&title[..n as usize])
+                    .contains("CODENOTCH_QUOTA_VISIBILITY_FIXTURE") {
+                    (*(param.0 as *const AtomicBool)).store(true, Ordering::Relaxed);
+                }
+            }
+            BOOL(1)
+        }
+
+        let visible = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let v = visible.clone();
+        let d = done.clone();
+        let observer = std::thread::spawn(move || {
+            while !d.load(Ordering::Relaxed) {
+                unsafe { let _ = EnumWindows(Some(inspect), LPARAM(Arc::as_ptr(&v) as isize)); }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("codenotch-visibility-test-{}-{}",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&dir).unwrap();
+        let output = run_cmd_conpty(&std::env::current_exe().unwrap(),
+            &["--exact", "agy_cli::tests::visible_console_child_fixture", "--ignored", "--nocapture"],
+            Some(&dir), Duration::from_secs(15));
+        done.store(true, Ordering::Relaxed);
+        observer.join().unwrap();
+        let completed = std::fs::read(dir.join("console-child-completed"));
+        let _ = std::fs::remove_file(dir.join("console-child-completed"));
+        let _ = std::fs::remove_dir(&dir);
+        output.unwrap();
+        assert_eq!(completed.unwrap(), b"blocked", "quota queries must not launch terminal subprocesses");
+        assert!(!visible.load(Ordering::Relaxed), "a background CLI descendant displayed a console on the user's desktop");
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn test_bounded_runner_and_no_deadlock() {
         let cmd = std::env::var_os("ComSpec")
             .map(PathBuf::from)
@@ -876,10 +1004,10 @@ mod tests {
         }
 
         let start = std::time::Instant::now();
-        // Ping command runs for ~9 seconds; timeout is set to 400ms
+        // An infinite cmd built-in loop needs no subprocess; timeout is 400ms.
         let res = run_cmd_conpty(
             &cmd,
-            &["/c", "ping -n 10 127.0.0.1 >nul"],
+            &["/c", "for /L %i in (0,0,1) do @echo waiting"],
             None,
             Duration::from_millis(400),
         );

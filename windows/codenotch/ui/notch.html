@@ -425,6 +425,7 @@ let copilotSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let glmSnap={status:'absent',windows:[],fetched_at:0,note:''};
 // OpenCode Go plan, read with OpenCode's own sign-in; absent until OpenCode is installed
 let opencodeSnap={status:'absent',windows:[],fetched_at:0,note:''};
+let zedSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let commandcodeSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let openrouterAccounts=[];
 // OPENROUTER_BUDGET_START
@@ -1185,6 +1186,7 @@ function providers(){
   if(grokSnap.status!=='absent') list.push({id:'grok',base:'grok',name:'Grok',glyph:'Gk',snap:grokSnap});
   if(copilotSnap.status!=='absent') list.push({id:'copilot',base:'copilot',name:'GitHub Copilot',glyph:'Cp',snap:copilotSnap});
   if(agSnap.status!=='absent') list.push({id:'gemini',base:'gemini',name:'Antigravity',glyph:'Ag',snap:agSnap});
+  if(zedSnap.status!=='absent') list.push({id:'zed',base:'zed',name:'Zed',glyph:'Z',snap:zedSnap});
   if(Array.isArray(notchSlots)&&notchSlots.length){
     const picked=list.filter(p=>!!slotFor(p.base));
     // Never leave the notch with nothing in it: an empty result means the choice no longer matches
@@ -1219,6 +1221,7 @@ function headlineOf(snap,id){
   if(id==='copilot') return byId('premium_interactions')||ws[0];
   if(id==='glm') return byId('session');
   if(id==='opencode') return byId('rolling');
+  if(id==='zed') return byId('spend')||byId('model_requests')||byId('edit_predictions');
   if(id==='commandcode') return byId('monthly');
   if(id==='openrouter') return byId('budget');
   const fam=ws.filter(w=>laneFamily(w)===agPrefs.model), lanes=fam.length?fam:ws;
@@ -1239,6 +1242,7 @@ function weeklyOf(snap,id){
   if(id==='copilot') return null; // monthly quotas only; nothing weekly to draw
   if(id==='glm') return byId('weekly');
   if(id==='opencode') return byId('weekly');
+  if(id==='zed') return null;
   if(id==='commandcode') return byId('weekly');
   if(id==='openrouter') return null;
   const fam=ws.filter(w=>laneFamily(w)===agPrefs.model), lanes=fam.length?fam:ws;
@@ -1341,7 +1345,7 @@ function renderRing(){
     }
     if(p.base==='openrouter') pct.textContent=p.snap.status==='ok'&&!staleOf(p.snap)?(p.account.remaining==null?orCopy('No cap','未設限'):orMoney(p.account.remaining)):'—';
     else if(p.snap.status==='needsAuth'||p.snap.status==='none') pct.textContent='—';
-    else if(h && h.count!=null) pct.textContent='~'+h.count;
+    else if(h && h.count!=null) pct.textContent=(p.base==='zed'?'':'~')+h.count;
     else if(h) pct.textContent=(h.derived?'~':'')+(showRemaining?leftPctText(h.used):pctText(h.used))+'%';
     else pct.textContent=p.snap.windows.length?'—':'…'; // its declared window is missing: a dash, not a wait
     glyph.classList.toggle('dim', !!(h && h.used>=1));
@@ -1416,7 +1420,7 @@ function renderCard(){
   if(p.base==='openrouter'){
     html+=openrouterCard(p.account);
   }else if(snap.status==='needsAuth'){
-    const who={claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',grok:'Run grok login to see usage.',copilot:'Run gh auth login to see usage.',opencode:'Run opencode auth login to see usage.',commandcode:'Sign in with the Command Code app to read your usage.',gemini:'Sign in to Antigravity to see usage.'}[p.base]||'';
+    const who={claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',grok:'Run grok login to see usage.',copilot:'Run gh auth login to see usage.',opencode:'Run opencode auth login to see usage.',zed:'Connect a Zed browser session in Settings > Accounts.',commandcode:'Sign in with the Command Code app to read your usage.',gemini:'Sign in to Antigravity to see usage.'}[p.base]||'';
     html+=`<div class="c-note">${textCopy(who)}<br>${esc(textCopy(snap.note||''))}</div>`;
   }else if(!snap.windows.length){
     html+=`<div class="c-note">${esc(textCopy(snap.note||'Waiting for first reading…'))}</div>`;
@@ -1432,6 +1436,10 @@ function renderCard(){
         if(group) html+=`<div class="g-head">${esc(textCopy(group))}</div><div class="g-box">`;
       }
       if(w.count!=null){
+        if(p.base==='zed'){
+          html+=`<div class="win"><div class="w-row"><span class="w-label">${esc(w.label)}</span></div><div class="w-used">${esc(String(w.count))}</div></div>`;
+          continue;
+        }
         html+=`<div class="win"><div class="w-row"><span class="w-label">${esc(textCopy(w.label))}</span></div>
           <div class="w-used">${w.count>0?`~${w.count} ${textCopy(w.count===1?'request today':'requests today')}`:textCopy('no requests today')}</div></div>`;
         continue;
@@ -2215,6 +2223,8 @@ listen('openrouter',e=>{openrouterAccounts=Array.isArray(e.payload)?e.payload:[]
 invoke('get_openrouter').then(a=>{openrouterAccounts=Array.isArray(a)?a:[];renderRing();}).catch(()=>{});
 listen('commandcode',e=>{commandcodeSnap=e.payload||commandcodeSnap;settle('commandcode');renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 invoke('get_commandcode').then(u=>{commandcodeSnap=u||commandcodeSnap;renderRing();}).catch(()=>{});
+listen('zed',e=>{zedSnap=e.payload||zedSnap;settle('zed');renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
+invoke('get_zed').then(u=>{zedSnap=u||zedSnap;renderRing();}).catch(()=>{});
 invoke('get_notch_slots').then(v=>{if(Array.isArray(v)){notchSlots=v;renderRing();}}).catch(()=>{});
 listen('sidebar_order',e=>{
   if(Array.isArray(e.payload)){sidebarOrder=e.payload;renderRing();if(card.classList.contains('show'))renderCard();}
